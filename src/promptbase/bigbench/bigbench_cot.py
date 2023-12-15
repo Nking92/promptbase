@@ -5,42 +5,10 @@ import json
 import time
 import argparse
 import threading
-
-
-bigbench_data_root = "../datasets/BigBench"
-cot_prompts_dir = os.path.join(bigbench_data_root, "cot-prompts")
-bbh_test_dir = os.path.join(bigbench_data_root, "bbh")
-
-SUBJECTS = [
-    "boolean_expressions",
-    "causal_judgement",
-    "date_understanding",
-    "disambiguation_qa",
-    "dyck_languages",
-    "formal_fallacies",
-    "geometric_shapes",
-    "hyperbaton",
-    "logical_deduction_five_objects",
-    "logical_deduction_seven_objects",
-    "logical_deduction_three_objects",
-    "movie_recommendation",
-    "multistep_arithmetic_two",
-    "navigate",
-    "object_counting",
-    "penguins_in_a_table",
-    "reasoning_about_colored_objects",
-    "ruin_names",
-    "salient_translation_error_detection",
-    "snarks",
-    "sports_understanding",
-    "temporal_sequences",
-    "tracking_shuffled_objects_five_objects",
-    "tracking_shuffled_objects_seven_objects",
-    "tracking_shuffled_objects_three_objects",
-    "web_of_lies",
-    "word_sorting",
-]
-
+from promptbase.utils.consts import BIGBENCH_SUBJECTS
+from promptbase.utils import text_completion
+import os
+from pathlib import Path
 
 def extract_chat_qa(few_shot_prompt):
     question = few_shot_prompt.split("\nA: ")[0].strip()
@@ -80,39 +48,17 @@ def do_chat_cot(bbh_test_path, cot_prompt_path, test_name, cot_results_path):
             prompt_messages = few_shot_messages + [
                 {"role": "user", "content": "Q: " + example["input"]}
             ]
-            header = {"Authorization": os.getenv("AZURE_OPENAI_API_KEY")}
-            data = {
-                "model": "gpt-4-1106-preview",
-                "temperature": 0,
-                "messages": prompt_messages,
-                "max_tokens": 2000,
-            }
-            url = os.getenv("AZURE_OPENAI_API_URL")
-            while True:
-                try:
-                    response = requests.post(
-                        url, headers=header, json=data, timeout=600
-                    )
-                    completion = json.loads(response.text)
-                    test_results.append(
-                        {
-                            "index": i,
-                            "test_name": test_name,
-                            "prompt": prompt_messages,
-                            "completion": completion["choices"][0]["message"][
-                                "content"
-                            ],
-                        }
-                    )
-                    break
-                except Exception as e:
-                    print("Caught exception: ", e)
-                    print("Retrying in 35 seconds...")
-                    time.sleep(35)
-            cot_results_filename = os.path.join(cot_results_path, f"{test_name}_chat_cot_results.json")
-            json.dump(
-                cot_results_filename, open(f"{test_name}_chat_cot_results.json", "w"), indent=4
+            response = text_completion(prompt=prompt_messages, temperature=0)
+            test_results.append(
+                {
+                    "index": i,
+                    "test_name": test_name,
+                    "prompt": prompt_messages,
+                    "completion": response["text"]
+                }
             )
+            cot_results_filename = os.path.join(cot_results_path, f"{test_name}_chat_cot_results.json")
+            json.dump(test_results, open(cot_results_filename, "w"), indent=4)
 
 
 def do_completion_cot(bbh_test_path, cot_prompt_path, test_name, cot_results_path):
@@ -168,11 +114,25 @@ def do_completion_cot(bbh_test_path, cot_prompt_path, test_name, cot_results_pat
 
 def process_cot(test_name: str, api_type="chat"):
     if test_name == "all":
-        subjects = SUBJECTS
-    elif test_name in SUBJECTS:
+        subjects = BIGBENCH_SUBJECTS
+    elif test_name in BIGBENCH_SUBJECTS:
         subjects = [test_name]
     else:
         print(f"Invalid test name: {test_name}")
+        exit(1)
+
+    current_file_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+    datasets_dir = current_file_dir.parent / "datasets"
+    bigbench_data_root = datasets_dir / "bigbench"
+    cot_prompts_dir = bigbench_data_root / "cot-prompts"
+    bbh_test_dir = bigbench_data_root / "bbh"
+    generations_dir = current_file_dir.parent / "generations"
+
+    if not os.path.exists(cot_prompts_dir):
+        print(f"COT prompt directory {cot_prompts_dir} does not exist")
+        exit(1)
+    elif not os.path.exists(bbh_test_dir):
+        print(f"BBH test directory {bbh_test_dir} does not exist")
         exit(1)
 
     print(f"Processing CoT for BigBench subjects: {subjects}")
@@ -181,19 +141,20 @@ def process_cot(test_name: str, api_type="chat"):
     for subject in subjects:
         bbh_test_path = os.path.join(bbh_test_dir, f"{subject}.json")
         cot_prompt_path = os.path.join(cot_prompts_dir, f"{subject}.txt")
-        # check if they exist
         if not os.path.exists(bbh_test_path):
             print(f"Data file {bbh_test_path} does not exist")
         elif not os.path.exists(cot_prompt_path):
             print(f"COT prompt file {cot_prompt_path} does not exist")
 
         if api_type == "completion":
-            results_path = os.path.join(".", "results", "cot_results", "completion")
+            results_path = generations_dir / "bigbench" / "cot_results" / "completion"
+            os.makedirs(results_path, exist_ok=True)
             thread = threading.Thread(
                 target=do_completion_cot, args=(bbh_test_path, cot_prompt_path, subject, results_path)
             )
         else:
-            results_path = os.path.join(".", "results", "cot_results", "chat")
+            results_path = generations_dir / "bigbench" / "cot_results" / "chat"
+            os.makedirs(results_path, exist_ok=True)
             thread = threading.Thread(
                 target=do_chat_cot, args=(bbh_test_path, cot_prompt_path, subject, results_path)
             )
